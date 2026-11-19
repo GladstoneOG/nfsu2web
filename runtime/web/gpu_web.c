@@ -25,6 +25,7 @@
 #include "host_abi.h"
 #include "gpu_proto.h"
 #include "wgsl.h"
+#include "glsl.h"
 #include "texrep.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,8 +56,17 @@ static double now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t
 static GwCtl   *g_ctl;
 static GwVsync *g_vs;
 static int      g_on;            /* recording for a page renderer */
+static int      g_glsl;          /* 1 = WebGL2 (GLSL ES 3.00), 0 = WebGPU (WGSL) */
 static int      g_inited;
 static int      g_detached;      /* the page never attached: dropped back to null behaviour */
+
+int gw_use_glsl(void){
+    if (!g_inited){
+        const char *r = getenv("NFSU2_RENDERER");
+        return r && !strcmp(r, "webgl2");
+    }
+    return g_glsl;
+}
 
 #define PSC_N  32
 #define MAXV   (256u * 1024u)               /* TVerts per buffer (CPU vertex path) */
@@ -122,7 +132,8 @@ static void gw_init(void){
     if (!g_ctl || !g_vs){ fprintf(stderr, "[gpu] out of memory for the control block\n"); return; }
     g_ctl->magic = GW_MAGIC; g_ctl->version = GW_VERSION; g_ctl->layout = GW_LAYOUT; g_ctl->size = sizeof *g_ctl;
     const char *r = getenv("NFSU2_RENDERER");
-    int want = r && !strcmp(r, "webgpu");
+    int want = r && (!strcmp(r, "webgpu") || !strcmp(r, "webgl2"));
+    g_glsl = r && !strcmp(r, "webgl2");
     if (want){
         int ok = 1;
         for (int b = 0; b < GW_NBUF; b++){
@@ -149,14 +160,21 @@ static void gw_init(void){
         /* the translator's built-in modules: vs_0
          * for TVert draws, ps_0 / ps_256 for draws without a pixel shader */
         static char t[16384];
-        if (wgsl_tvert_module(t, sizeof t) > 0) shader_put(GW_SHADER_VS, 0, t);
-        if (wgsl_ff_module(0, t, sizeof t, 0u) > 0) shader_put(GW_SHADER_PS, 0, t);
-        if (wgsl_ff_module(256, t, sizeof t, 1u) > 0) shader_put(GW_SHADER_PS, 256, t);
+        if (g_glsl){
+            if (glsl_tvert_module(t, sizeof t) > 0) shader_put(GW_SHADER_VS, 0, t);
+            if (glsl_ff_module(0, t, sizeof t, 0u) > 0) shader_put(GW_SHADER_PS, 0, t);
+            if (glsl_ff_module(256, t, sizeof t, 1u) > 0) shader_put(GW_SHADER_PS, 256, t);
+        } else {
+            if (wgsl_tvert_module(t, sizeof t) > 0) shader_put(GW_SHADER_VS, 0, t);
+            if (wgsl_ff_module(0, t, sizeof t, 0u) > 0) shader_put(GW_SHADER_PS, 0, t);
+            if (wgsl_ff_module(256, t, sizeof t, 1u) > 0) shader_put(GW_SHADER_PS, 256, t);
+        }
     }
     nfsu2_register(HOST_KIND_GPU, g_ctl, sizeof *g_ctl);
     nfsu2_register(HOST_KIND_VSYNC, g_vs, sizeof *g_vs);
     fprintf(stderr, "[gpu] %s (control block 0x%x, layout %08x)\n",
-            g_on ? "WebGPU renderer: recording for the page" : "no renderer (NFSU2_RENDERER unset): draws dropped",
+            g_on ? (g_glsl ? "WebGL2 renderer: recording for the page" : "WebGPU renderer: recording for the page")
+                 : "no renderer (NFSU2_RENDERER unset): draws dropped",
             (unsigned)(uintptr_t)g_ctl, GW_LAYOUT);
 }
 
@@ -559,7 +577,9 @@ const uint8_t *metal_pool_cpu(void){ return g_pool; }
 #define MAXPS  512
 static uint8_t g_vs_ok[MAXVSF], g_ps_ok[MAXPS];
 static unsigned g_vs_n = 0, g_ps_n = 0, g_msl_vs = 0, g_msl_ps = 0;
-static int is_wgsl(const char *s){ return s && (strstr(s, "@vertex") || strstr(s, "@fragment")); }
+static int is_wgsl(const char *s){
+    return s && (strstr(s, "@vertex") || strstr(s, "@fragment") || strstr(s, "#version 300 es"));
+}
 static void shader_put(int op, int id, const char *src){
     uint32_t n = (uint32_t)strlen(src) + 1u;
     GwCmd *c = rq_begin((uint32_t)op, n);

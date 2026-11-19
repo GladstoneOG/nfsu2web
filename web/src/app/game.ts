@@ -6,6 +6,7 @@
 import { startProcess, type GameProcess } from '../host/process';
 import { N } from './i18n';
 import { HostKind } from '../host/abi';
+import { detectedRendererBackend } from './checks';
 import {
   attachAudio, attachInput, attachNet, attachRenderer, OtherBuild,
   type AudioSubsystem, type InputSubsystem, type NetSubsystem, type RendererSubsystem, type Subsystem,
@@ -104,11 +105,13 @@ export class GameSession {
   static async start(o: SessionOptions): Promise<GameSession> {
     const s = new GameSession();
     s.canvas = o.canvas;
+    const backend = detectedRendererBackend();
+    const env = backend === 'webgl2' ? { ...o.env, NFSU2_RENDERER: 'webgl2' } : o.env;
     const tid = (t: number, fd: number) => fd === 2 ? `[${t}!]` : `[${t}]`;
     s.proc = await startProcess({
       module: o.module,
       initialPages: o.info.pages || undefined,
-      cfg: { args: ['nfsu2', '/data/SPEED2.EXE'], env: o.env, dataBase: DATA_BASE, manifestUrl: MANIFEST_URL, saveDir: o.saveDir,
+      cfg: { args: ['nfsu2', '/data/SPEED2.EXE'], env, dataBase: DATA_BASE, manifestUrl: MANIFEST_URL, saveDir: o.saveDir,
         ...o.memory ? { saves: 'memory' as const, memFiles: o.memory } : {} },
       onLog: (line, fd, t) => o.log(`${tid(t, fd)} ${line}`),
       onSaved: o.onSaved,
@@ -120,7 +123,7 @@ export class GameSession {
     });
     s.exited = s.proc.exited.then(code => { s.exitCode = code; s.detach(); return code; });
     void s.proc.registered(HostKind.Status).then(r => { if (!s.detached) s.status = new StatusReader(s.proc.memory, r.ptr); });
-    const common = { env: o.env, log: o.log };
+    const common = { env, log: o.log };
     // An attach may finish after the game ended (a crash at boot, Stop while the
     // renderer still waits for its registration): such a module is detached at once.
     const attach = async <T extends Subsystem>(name: string, f: () => T | Promise<T>): Promise<T | null> => {

@@ -22,6 +22,8 @@ import { Encoder } from './encoder';
 import type { FromPng, ToPng, ToPngEnd, ToPngTile } from './png-worker';
 import { PH_ADD, PH_DONE, PH_NOW, PH_OFF, PLAIN_LOOK, PhotoPicture, type PhotoLook, type PhotoTile } from './photo-picture';
 import { GPU_PIPELINES, localStore } from '../app/prefs';
+import { attachWebGL2Renderer } from './webgl2/index';
+export { probeWebGL2 } from './webgl2/index';
 export type { PhotoLook } from './photo-picture';
 
 /** how long photo() waits for a whole still picture before it keeps the picture as it is: the camera still moving
@@ -89,6 +91,8 @@ export interface RendererOptions {
   /** every frame drawn, in the same task: quick chat's places over the cars in it (gpu_proto.h GwMarks): n marks of
    *  4 numbers in m (id, x, y as parts of the game's picture, scale; reused, read it at once) */
   onMarks?: (n: number, m: Float32Array, ids: Uint32Array) => void;
+  /** Graphics backend: 'auto' (WebGPU -> compat -> WebGL2), 'webgpu', or 'webgl2'. */
+  backend?: 'auto' | 'webgpu' | 'webgl2';
   log?: (s: string) => void;
 }
 
@@ -132,7 +136,8 @@ export interface RendererWindow {
 }
 
 export interface Renderer {
-  readonly device: GPUDevice;
+  readonly backend?: 'webgpu' | 'webgl2';
+  readonly device?: GPUDevice;
   stats(): RendererStats;
   /** read the back buffer of the next encoded frame as PNG; with opts.artifacts it is also
    *  uploaded as <name>.png (an autotest dump falling on the same frame keeps its own name); mark: the site's
@@ -185,9 +190,25 @@ const errText = (x: unknown) => {
 export async function attachRenderer(proc: GameProcess, canvas: HTMLCanvasElement, opts: RendererOptions = {}): Promise<Renderer> {
   const log = opts.log ?? ((s: string) => console.log(s));
   const attachedAt = performance.now();
-  if (!navigator.gpu) throw new Error('WebGPU is not available in this browser');
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (!adapter) throw new Error('no WebGPU adapter');
+  if (opts.backend === 'webgl2') return attachWebGL2Renderer(proc, canvas, opts);
+  let adapter: GPUAdapter | null = null;
+  if (navigator.gpu) {
+    try { adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch { adapter = null; }
+    if (!adapter) {
+      try {
+        const compat = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance', featureLevel: 'compatibility' } as GPURequestAdapterOptions);
+        if (compat && (compat.limits.maxStorageBuffersInVertexStage ?? 0) >= 1) {
+          adapter = compat;
+          log('[gpu] using WebGPU compatibility mode adapter');
+        }
+      } catch { /* fallback below */ }
+    }
+  }
+  if (!adapter) {
+    if (opts.backend === 'webgpu') throw new Error(navigator.gpu ? 'no WebGPU adapter' : 'WebGPU is not available in this browser');
+    log('[gpu] no WebGPU adapter available: falling back to WebGL2 renderer');
+    return attachWebGL2Renderer(proc, canvas, opts);
+  }
   // without BC the encoder unpacks the DXT textures as they upload (dxt.ts), but for DXT1 on a GPU with ASTC (Apple's),
   // which it rewrites as ASTC 4x4 (astc.ts): a quarter of the memory unpacked takes
   const bc = adapter.features.has('texture-compression-bc') && !opts.noBC;
@@ -922,6 +943,7 @@ export async function attachRenderer(proc: GameProcess, canvas: HTMLCanvasElemen
   try { ro.observe(canvas, { box: 'device-pixel-content-box' }); } catch { ro.observe(canvas); }
 
   return {
+    backend: 'webgpu',
     device,
     stats: () => ({ frames, draws: enc.totalDraws, passes: enc.totalPasses, pipelines: enc.pipelinesMade, pipelinesWarm: enc.pipelinesAsync, errors,
       pipelineMs: enc.pipeMs, pipelineMsMax: enc.pipeMsMax, gpuMsAvg: gpuMsN ? gpuMsTotal / gpuMsN : 0, gpuMsMax,

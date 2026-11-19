@@ -71,6 +71,7 @@
 import type { GameProcess } from '../host/process';
 import { HostKind } from '../host/abi';
 import * as P from './proto';
+import { WebRTCMesh } from './webrtc';
 import { N } from '../app/i18n';
 
 export interface NetOptions {
@@ -528,6 +529,12 @@ export class Link implements NetLink {
   /** the switch's peer list (the online host on it too), as its last whole list and the changes since made it */
   private peerMap = new Map<number, { name: string; server: boolean }>();
   private peerVips = new Set<number>();
+  /** Opportunistic WebRTC P2P DataChannel mesh (unordered UDP-like car sync, saves CF Free Tier DO quota) */
+  private rtc: WebRTCMesh | null = WebRTCMesh.supported() ? new WebRTCMesh(
+    msg => { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg)); },
+    buf => this.rxFrame(buf),
+    s => this.o.log?.(s),
+  ) : null;
   /** the page's answers so far (AUTO_*): per sender (a vip of the switch, which writes the source), and all */
   private autoSrc = new Map<number, AutoBucket>();
   private autoAll = new AutoBucket();
@@ -894,6 +901,7 @@ export class Link implements NetLink {
       }
       if (this.full) { this.full = false; this.o.onNotice?.(N('A place on the server freed up: you can play with others now.')); }
       if (this.lost) { this.lost = false; this.o.onBack?.(); }
+      void this.rtc?.start(this.vipNum);
       this.resolveOnline(this.vip);
     } else if (m.t === 'queue' && Number.isInteger(m.pos) && Number.isInteger(m.of)) {
       // the server is full: in line for a place (its welcome comes when it is our turn)
@@ -939,6 +947,8 @@ export class Link implements NetLink {
       this.peersUpdated();
     } else if (m.t === 'friend') {
       this.o.onFriend?.(m);
+    } else if ((m.t === 'rtc-offer' || m.t === 'rtc-answer' || m.t === 'rtc-ice') && typeof m.from === 'number') {
+      void this.rtc?.onSignal(m.t, m.from, m.data);
     } else if (m.t === 'pong' && typeof m.id === 'number') {
       this.ponged = true;
       const t0 = this.pings.get(m.id);
@@ -954,6 +964,7 @@ export class Link implements NetLink {
   private peersUpdated() {
     this.peers = [...this.peerMap].filter(([, p]) => !p.server).map(([v, p]) => ({ vip: P.ipStr(v), name: p.name, self: v === this.vipNum }));
     this.peerVips = new Set(this.peerMap.keys());
+    this.rtc?.syncPeers([...this.peerMap.keys()]);
     for (const ep of this.eps()) this.publishPeers(ep);
     this.o.onPeers?.(this.peers);
   }
@@ -1116,7 +1127,10 @@ export class Link implements NetLink {
           sentNow(f, len, w);
           ep.away = roamAway(dv, s + P.S_DATA, len) ?? ep.away;
         }
-        bundle.add(f, dst >>> 0);
+        const dstU = dst >>> 0;
+        const canP2P = (f[P.F_KIND] === P.NET_KIND_UDP || f[P.F_KIND] === P.NET_KIND_LAN_UDP)
+          && dstU !== P.NET_BROADCAST && dstU !== P.NET_ROAM_HUB && (dstU & 0xffff) !== 1;
+        if (!canP2P || !this.rtc?.send(dstU, f)) bundle.add(f, dstU);
         this.st.framesOut++; this.st.bytesOut += len;
         if (ep.kind === 'lan') this.st.lanOut++;
         if (w >= 0 && w < 60000) {
@@ -1282,6 +1296,7 @@ export class Link implements NetLink {
     // every handler goes: a closing socket lives on until the server answers the
     // close, and a handler would keep this link and the game's memory with it
     const ws = this.ws; this.ws = null;
+    this.rtc?.close();
     if (ws) { ws.onopen = null; ws.onmessage = null; ws.onerror = null; ws.onclose = null; ws.close(1000, 'closed'); }
     for (const ep of this.eps()) {
       Atomics.store(ep.i32, P.W_PAGE_STATE, P.NET_PAGE_NONE);

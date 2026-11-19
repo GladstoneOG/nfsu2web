@@ -1480,3 +1480,7 @@ int ps_to_msl(const VSProg *p, int id, char *out, size_t cap){
  * lives in runtime/web/ and shares the parser's private types from here. */
 #include "web/vsemu_wgsl.inc"
 #endif
+#if defined(__wasm__) || defined(VSEMU_GLSL)
+/* GLSL ES 3.00 backend for the WebGL2 non-DX12 fallback renderer. */
+#include "web/vsemu_glsl.inc"
+#endif

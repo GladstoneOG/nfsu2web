@@ -135,6 +135,25 @@ export function checkIsolation(): Check {
  * has WebGPU on (github.com/gpuweb/gpuweb/wiki/Implementation-Status) decide the cases.
  * lostBefore: the last game stopped because its graphics went (GPU-LOST).
  */
+import { probeWebGL2 } from '../gpu/webgl2/index';
+
+let activeRendererBackend: 'webgpu' | 'webgl2' = 'webgpu';
+
+/** Returns the renderer backend selected by checkGpu() ('webgpu' or 'webgl2'). */
+export function detectedRendererBackend(): 'webgpu' | 'webgl2' {
+  return activeRendererBackend;
+}
+
+function requestedRenderer(): 'auto' | 'webgpu' | 'webgl2' {
+  try {
+    const q = new URLSearchParams(location.search).get('renderer');
+    if (q === 'webgl2' || q === 'webgpu') return q;
+    const saved = localStorage.getItem('nfsu2.renderer');
+    if (saved === 'webgl2' || saved === 'webgpu') return saved;
+  } catch { /* ignore */ }
+  return 'auto';
+}
+
 export async function checkGpu(lostBefore = false): Promise<Check & { adapter?: string }> {
   const label = N('Graphics (WebGPU)');
   const gpu = (navigator as any).gpu as GPU | undefined;
@@ -146,19 +165,50 @@ export async function checkGpu(lostBefore = false): Promise<Check & { adapter?: 
   const fail = (detail: string, code: string, v?: Vars) => check('gpu', label, 'fail', detail, code, v);
   // navigator.gpu is there in secure pages only: the isolation check says what to do
   if (!isSecureContext) return fail(N('Off because this address is not secure (see above).'), 'GPU-NOT-SECURE');
-  // Firefox: on by itself on Windows (141) and on Macs with Apple chips (147), elsewhere in Nightly only
-  if (!gpu) return ff
-    ? android
-      ? fail(N('Firefox for Android has no WebGPU yet. Play in Chrome.'), 'GPU-OFF-FIREFOX-ANDROID')
-      : fail(N('This Firefox has no WebGPU. On Windows and Apple-chip Macs, update Firefox (Help, About Firefox). Elsewhere, such as Linux, play in Chrome or set dom.webgpu.enabled to true in about:config.'), 'GPU-OFF-FIREFOX')
-    : chromium
-      ? fail(N('This Chrome has no WebGPU. Update Chrome (Help, About Google Chrome). On Linux, also turn on chrome://flags/#enable-unsafe-webgpu and restart Chrome.'), 'GPU-OFF')
-      : ios
-        ? fail(N('This browser has no WebGPU. It comes with iOS 26 and iPadOS 26: update this device (Settings, General, Software Update).'), 'GPU-OFF-IOS')
-        : fail(N('This browser has no WebGPU. Play in Chrome or Firefox.'), 'GPU-OFF-OTHER');
+
+  const req = requestedRenderer();
+  const tryWebGL2Fallback = (): (Check & { adapter?: string }) | null => {
+    const gl2 = probeWebGL2();
+    if (!gl2.ok) return null;
+    activeRendererBackend = 'webgl2';
+    const info = `${gl2.renderer} (WebGL2)`;
+    if (gl2.software) {
+      return { ...check('gpu', N('Graphics: {info}'), 'warn', N('Running via software WebGL2 ({info}); performance may be low. Enable hardware acceleration in browser settings if available.'), 'GPU-WEBGL2-SOFTWARE', { info }), adapter: info };
+    }
+    return { ...check('gpu', N('Graphics: {info}'), 'ok', '', undefined, { info }), adapter: info };
+  };
+
+  if (req === 'webgl2') {
+    const res = tryWebGL2Fallback();
+    if (res) return res;
+  }
+
   let ad: GPUAdapter | null = null;
-  try { ad = await gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch { /* reported below */ }
+  if (gpu) {
+    try { ad = await gpu.requestAdapter({ powerPreference: 'high-performance' }); } catch { /* reported below */ }
+    if (!ad) {
+      try {
+        const compat = await gpu.requestAdapter({ powerPreference: 'high-performance', featureLevel: 'compatibility' } as GPURequestAdapterOptions);
+        if (compat && (compat.limits.maxStorageBuffersInVertexStage ?? 0) >= 1) ad = compat;
+      } catch { /* fallback below */ }
+    }
+  }
   if (!ad) {
+    // Non-DX12 GPUs (e.g. Intel HD 4000/4400/4600, DX10/DX11 cards) and browsers without WebGPU
+    // automatically use the WebGL2 backend instead of failing with GPU-ADAPTER-WIN.
+    if (req !== 'webgpu' && !lostBefore) {
+      const glRes = tryWebGL2Fallback();
+      if (glRes) return glRes;
+    }
+    if (!gpu) return ff
+      ? android
+        ? fail(N('Firefox for Android has no WebGPU yet. Play in Chrome.'), 'GPU-OFF-FIREFOX-ANDROID')
+        : fail(N('This Firefox has no WebGPU. On Windows and Apple-chip Macs, update Firefox (Help, About Firefox). Elsewhere, such as Linux, play in Chrome or set dom.webgpu.enabled to true in about:config.'), 'GPU-OFF-FIREFOX')
+      : chromium
+        ? fail(N('This Chrome has no WebGPU. Update Chrome (Help, About Google Chrome). On Linux, also turn on chrome://flags/#enable-unsafe-webgpu and restart Chrome.'), 'GPU-OFF')
+        : ios
+          ? fail(N('This browser has no WebGPU. It comes with iOS 26 and iPadOS 26: update this device (Settings, General, Software Update).'), 'GPU-OFF-IOS')
+          : fail(N('This browser has no WebGPU. Play in Chrome or Firefox.'), 'GPU-OFF-OTHER');
     // the graphics went during the last game, and the reloaded page gets no adapter: the browser keeps them off for a
     // while, not graphics too old (two players' Intel Iris Xe, a hung Direct3D 12 device, then GPU-ADAPTER-WIN in Chrome
     // and Brave).  Chrome blocks a site whose graphics hung from them for two minutes (gpu_data_manager_impl_private.cc,
@@ -197,6 +247,7 @@ export async function checkGpu(lostBefore = false): Promise<Check & { adapter?: 
     return fail(N('{Browser} couldn\'t use this computer\'s graphics. Restart {browser}; if that doesn\'t help, update {browser} and the system.'), 'GPU-ADAPTER',
       { browser: b, Browser: b === 'the browser' ? N('The browser') : b });
   }
+  activeRendererBackend = 'webgpu';
   let info = ad.info ? [ad.info.vendor, ad.info.architecture, ad.info.description].filter(Boolean).join(' ') : '';
   const ffg = ff && windows && !info ? firefoxGraphics() : null;
   if (ffg) info = ffg.name;

@@ -167,6 +167,13 @@ class RemoteLink implements NetLink {
 /** Attach the virtual LAN to a running game process, its link in a worker of its own (on the page when none starts).
  *  Returns at once; the socket opens when the runtime registers its first net mailbox (free roam or LAN play). */
 export function attachNetWorker(proc: GameProcess, opts: NetOptions = {}): NetLink {
+  // Run on the page thread when RTCPeerConnection is available (unless ?webrtc=0)
+  // so peers automatically establish direct WebRTC DataChannels and save Cloudflare DO quota.
+  const disableRtc = typeof location !== 'undefined' && new URLSearchParams(location.search).get('webrtc') === '0';
+  if (typeof RTCPeerConnection !== 'undefined' && !disableRtc) {
+    opts.log?.('[net] WebRTC P2P mode active on page thread (automatic WS fallback)');
+    return attachNet(proc, opts);
+  }
   let w: Worker;
   try { w = new Worker(new URL('/net/worker.js', import.meta.url), { type: 'module', name: 'net' }); }
   catch (e) {

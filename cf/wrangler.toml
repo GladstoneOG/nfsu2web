@@ -1,0 +1,51 @@
+name = "nfsu2web"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+workers_dev = true
+
+# All static assets (UI + brotli nfsu2.wasm + <16 MiB chunked NFSU2 game files)
+# Every file in ./public is <= 16 MiB (under Cloudflare Workers' 25 MiB per-file limit, <= 20,000 files).
+# Zero R2 bucket / zero credit card required — 100% Cloudflare Workers Free Plan!
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = [
+  "/game.wasm",
+  "/game.json",
+  "/data-manifest",
+  "/data-blocks/*",
+  "/data/*",
+  "/vault",
+  "/vault/*",
+  "/names",
+  "/players",
+  "/turn-credentials",
+  "/country",
+  "/seen",
+  "/lan",
+  "/robots.txt",
+  "/_pkg_index.json",
+  "/_data/*",
+  "/_wasm/*"
+]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "nfsu2-db"
+database_id = "b752963e-cb1e-4a14-927f-a70e5d8e3ea6"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "ROOM_SWITCH"
+class_name = "RoomSwitchDO"
+
+# SQLite-backed Durable Object (included on the Cloudflare Workers Free Plan!)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["RoomSwitchDO"]
+
+[vars]
+MAX_PEERS = "32"
+# Optional Cloudflare Realtime TURN credentials (1 TB/mo free):
+# wrangler secret put CF_TURN_TOKEN_ID
+# wrangler secret put CF_TURN_API_TOKEN

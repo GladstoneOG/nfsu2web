@@ -19,8 +19,9 @@ export type {
 } from './contract';
 
 export const attachRenderer: AttachRenderer = async (proc, canvas, o) => {
+  const backend = o.env.NFSU2_RENDERER === 'webgl2' ? 'webgl2' : o.env.NFSU2_RENDERER === 'webgpu' ? 'webgpu' : 'auto';
   const r = await gpuAttach(proc, canvas, { log: o.log, artifacts: o.artifacts, dumpScale: o.dumpScale, onLost: o.onLost, onMarks: o.onMarks,
-    pixelated: o.env.NFSU2_PIXELATED_TEXTURES === '1', aniso: o.env.NFSU2_ANISOTROPIC === '1' });
+    pixelated: o.env.NFSU2_PIXELATED_TEXTURES === '1', aniso: o.env.NFSU2_ANISOTROPIC === '1', backend });
   return {
     detach: () => r.detach(),
     imageRect: () => r.imageRect(),

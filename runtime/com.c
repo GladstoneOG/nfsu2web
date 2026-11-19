@@ -34,6 +34,7 @@ void metal_begin_frame(void);
 #ifdef __wasm__
 /* The browser renderer takes WGSL instead of MSL. */
 #include "web/wgsl.h"
+#include "web/glsl.h"
 #define SHADER_TEXT_CAP (256*1024)
 #else
 #define SHADER_TEXT_CAP (16384)
@@ -1268,7 +1269,9 @@ static int gpuvs_id(const VSProg *prog, uint32_t vs, uint32_t decl,
       } }
     static char msl[160*1024];          /* HD: + capture kernel */
 #ifdef __wasm__
-    int len = vs_to_wgsl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
+    int len = gw_use_glsl()
+        ? vs_to_glsl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl)
+        : vs_to_wgsl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
     if (wgsl_dump_on()) wgsl_dump_vs(gid, (int)vs, decl, (const int (*)[2])dcl, msl, len);
 #else
     int len = vs_to_msl(prog, gid, (const int (*)[2])dcl, msl, sizeof msl);
@@ -3887,7 +3890,9 @@ int com_call(CPU *c, uint32_t magic){
                     void metal_register_ps(int, const char *);
 #ifdef __wasm__
                     if (wgsl_dump_on()) wgsl_dump_obj("ps", id, g_mem+copy, sz, pp3);
-                    int pl = ps_to_wgsl(pp3, id, msl, sizeof msl);
+                    int pl = gw_use_glsl()
+                        ? ps_to_glsl(pp3, id, msl, sizeof msl)
+                        : ps_to_wgsl(pp3, id, msl, sizeof msl);
                     if (wgsl_dump_on()) wgsl_dump_ps(id, id, msl, pl);
 #else
                     int pl = ps_to_msl(pp3, id, msl, sizeof msl);
@@ -3905,7 +3910,9 @@ int com_call(CPU *c, uint32_t magic){
                      * draw time from the bound texture. */
 #ifdef __wasm__
                     if (id < PSCUBE){
-                        int cl = ps_to_wgsl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u);
+                        int cl = gw_use_glsl()
+                            ? ps_to_glsl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u)
+                            : ps_to_wgsl_ex(pp3, id + PSCUBE, msl, sizeof msl, 1u);
                         if (wgsl_dump_on()) wgsl_dump_ps(id + PSCUBE, id, msl, cl);
                         if (cl > 0) metal_register_ps(id + PSCUBE, msl);
                     }
